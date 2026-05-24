@@ -1,8 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { Project, ProjectPatch } from "@/types/project";
-import type { Screenplay, ScreenplayElement } from "@/types/screenplay";
-import { scriptItems } from "@/app/home/services/mockData";
+import type { Screenplay } from "@/types/screenplay";
 
 const STORAGE_KEY = "midnight-carnival.projects";
 
@@ -27,34 +26,6 @@ function emptyProject(title: string, script: Screenplay | null = null): Project 
     createdAt: now,
     updatedAt: now,
   };
-}
-
-// Convert the existing mock scriptItems (the wireframe demo content) into a
-// real Screenplay so the seeded "Midnight Carnival" project isn't blank.
-// Suggestion entries are intentionally dropped — AI suggestions arrive later.
-function buildDemoScreenplay(): Screenplay {
-  const elements: ScreenplayElement[] = [];
-  for (const item of scriptItems) {
-    if (item.kind === "scene") {
-      elements.push({ type: "scene", content: item.text });
-    } else if (item.kind === "action") {
-      elements.push({ type: "action", content: item.text });
-    } else if (item.kind === "dialogue") {
-      elements.push({ type: "character", content: item.character });
-      elements.push({ type: "dialogue", content: item.line });
-    }
-  }
-  return { id: makeId(), scenes: elements };
-}
-
-type SeedSpec = { title: string; script: Screenplay | null };
-
-function makeSeed(): SeedSpec[] {
-  return [
-    { title: "Midnight Carnival", script: buildDemoScreenplay() },
-    { title: "Static Bloom", script: null },
-    { title: "Untitled 03", script: null },
-  ];
 }
 
 type ProjectStore = {
@@ -135,11 +106,8 @@ export const useProjectStore = create<ProjectStore>()(
       seedInitialIfEmpty: () => {
         const { projects, currentProjectId } = get();
         if (projects.length === 0) {
-          const seeded = makeSeed().map((s) => emptyProject(s.title, s.script));
-          set({
-            projects: seeded,
-            currentProjectId: seeded[0].id,
-          });
+          const first = emptyProject("Untitled");
+          set({ projects: [first], currentProjectId: first.id });
           return;
         }
         if (!currentProjectId) {
