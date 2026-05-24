@@ -6,6 +6,8 @@ import type { DriveMetadata } from "@/types/drive";
 
 const ROOT_FOLDER_NAME = "Midnight Carnival";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const PROJECT_ID_KEY = "midnightCarnivalProjectId";
+const SCHEMA_VERSION = 1;
 
 type DriveFiles = drive_v3.Drive["files"];
 
@@ -16,11 +18,10 @@ function client(accessToken: string): drive_v3.Drive {
 }
 
 // ---------------------------------------------------------------------------
-// Folder helpers
+// Folder + file lookup helpers
 // ---------------------------------------------------------------------------
 
 function escapeQ(value: string): string {
-  // Drive search query strings are single-quoted; escape inner single quotes.
   return value.replace(/'/g, "\\'");
 }
 
@@ -63,61 +64,38 @@ async function createFolder(
   return res.data.id;
 }
 
-/**
- * Find or create the top-level "Midnight Carnival" folder in the user's Drive.
- * Returns the folder ID.
- */
 export async function ensureRootFolder(accessToken: string): Promise<string> {
   const drive = client(accessToken);
-  const existing = await findChild(drive.files, null, ROOT_FOLDER_NAME, FOLDER_MIME);
+  const existing = await findChild(
+    drive.files,
+    null,
+    ROOT_FOLDER_NAME,
+    FOLDER_MIME
+  );
   if (existing) return existing;
   return createFolder(drive.files, null, ROOT_FOLDER_NAME);
 }
 
-async function ensureProjectFolder(
+/**
+ * Look up a project's file by its appProperties.projectId tag — survives
+ * file renames and avoids any reliance on the (mutable, collidable) title.
+ */
+async function findProjectFileByProjectId(
   files: DriveFiles,
   rootId: string,
-  title: string
-): Promise<string> {
-  const existing = await findChild(files, rootId, title, FOLDER_MIME);
-  if (existing) return existing;
-  return createFolder(files, rootId, title);
-}
-
-// ---------------------------------------------------------------------------
-// JSON file helpers
-// ---------------------------------------------------------------------------
-
-async function upsertJson(
-  files: DriveFiles,
-  parentId: string,
-  name: string,
-  content: unknown,
-  existingId: string | undefined
-): Promise<string> {
-  const body = JSON.stringify(content ?? null, null, 2);
-  const media = { mimeType: "application/json", body };
-
-  if (existingId) {
-    try {
-      await files.update({ fileId: existingId, media });
-      return existingId;
-    } catch (err) {
-      // File may have been deleted in Drive. Fall through to create.
-      console.warn(
-        `[drive] update ${name} (${existingId}) failed, recreating:`,
-        err
-      );
-    }
-  }
-
-  const res = await files.create({
-    requestBody: { name, parents: [parentId] },
-    media,
-    fields: "id",
+  projectId: string
+): Promise<string | null> {
+  const res = await files.list({
+    q: [
+      `'${rootId}' in parents`,
+      `appProperties has { key='${PROJECT_ID_KEY}' and value='${escapeQ(projectId)}' }`,
+      "trashed = false",
+    ].join(" and "),
+    fields: "files(id, name)",
+    spaces: "drive",
+    pageSize: 10,
   });
-  if (!res.data.id) throw new Error(`Drive create ${name} returned no id`);
-  return res.data.id;
+  return res.data.files?.[0]?.id ?? null;
 }
 
 async function readJson<T>(
@@ -138,20 +116,52 @@ async function readJson<T>(
 }
 
 // ---------------------------------------------------------------------------
+// File-name sanitization (Drive accepts most chars; we just strip path
+// separators and trim. The file is keyed by ID anyway, name is cosmetic.)
+// ---------------------------------------------------------------------------
+
+function fileNameFor(title: string): string {
+  const cleaned = title.replace(/[/\\]/g, " ").trim();
+  return `${cleaned || "Untitled"}.json`;
+}
+
+// ---------------------------------------------------------------------------
 // Public sync API
 // ---------------------------------------------------------------------------
 
-type ProjectMetaFile = {
+type ProjectFile = {
+  schemaVersion: number;
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
+  script: Project["script"];
+  instructions: string;
+  references: Project["references"];
+  feedback: Project["feedback"];
+  chats: Project["chats"];
 };
 
+function projectToFile(project: Project): ProjectFile {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: project.id,
+    title: project.title,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    script: project.script ?? null,
+    instructions: project.instructions ?? "",
+    references: project.references ?? [],
+    feedback: project.feedback ?? [],
+    chats: project.chats ?? [],
+  };
+}
+
 /**
- * Push a project's content to Drive. Creates folder + files on first sync,
- * updates existing files on subsequent syncs. Returns the cloud metadata
- * that the client should store on the project.
+ * Push a project's content to Drive as a single JSON file. Looks up the
+ * existing file by appProperties.projectId so renames are safe and name
+ * collisions can't create duplicates. Also opportunistically trashes any
+ * legacy 5-file subfolder left behind by the old layout.
  */
 export async function syncProjectToDrive(
   accessToken: string,
@@ -159,87 +169,181 @@ export async function syncProjectToDrive(
 ): Promise<DriveMetadata> {
   const drive = client(accessToken);
   const rootId = await ensureRootFolder(accessToken);
-  const folderId =
-    project.cloud?.folderId ??
-    (await ensureProjectFolder(drive.files, rootId, project.title));
 
-  // If the folder ID was cached but the user renamed the project locally,
-  // rename the Drive folder too so the layout stays human-browsable.
-  if (project.cloud?.folderId) {
+  // Resolve the file ID. Order of preference:
+  //   1. The cached fileId (current layout).
+  //   2. A search by appProperties.projectId in the root folder.
+  //   3. None — we'll create one.
+  let fileId =
+    project.cloud?.fileId ??
+    (await findProjectFileByProjectId(drive.files, rootId, project.id));
+
+  const name = fileNameFor(project.title);
+  const body = JSON.stringify(projectToFile(project), null, 2);
+  const media = { mimeType: "application/json", body };
+
+  if (fileId) {
     try {
       await drive.files.update({
-        fileId: project.cloud.folderId,
-        requestBody: { name: project.title },
+        fileId,
+        requestBody: { name },
+        media,
       });
     } catch (err) {
-      console.warn("[drive] folder rename failed (continuing):", err);
+      // File was deleted out from under us; fall through to create.
+      console.warn(
+        `[drive] update ${name} (${fileId}) failed, recreating:`,
+        err
+      );
+      fileId = null;
     }
   }
 
-  const meta: ProjectMetaFile = {
-    id: project.id,
-    title: project.title,
-    createdAt: project.createdAt,
-    updatedAt: project.updatedAt,
-  };
+  if (!fileId) {
+    const res = await drive.files.create({
+      requestBody: {
+        name,
+        parents: [rootId],
+        appProperties: { [PROJECT_ID_KEY]: project.id },
+      },
+      media,
+      fields: "id",
+    });
+    if (!res.data.id) throw new Error(`Drive create ${name} returned no id`);
+    fileId = res.data.id;
+  }
 
-  const existing = project.cloud?.files ?? {};
-
-  const [metaId, scriptId, feedbackId, chatsId, instructionsId] =
-    await Promise.all([
-      upsertJson(drive.files, folderId, "meta.json", meta, existing.meta),
-      upsertJson(
-        drive.files,
-        folderId,
-        "script.json",
-        project.script ?? null,
-        existing.script
-      ),
-      upsertJson(
-        drive.files,
-        folderId,
-        "feedback.json",
-        project.feedback ?? [],
-        existing.feedback
-      ),
-      upsertJson(
-        drive.files,
-        folderId,
-        "chats.json",
-        project.chats ?? [],
-        existing.chats
-      ),
-      upsertJson(
-        drive.files,
-        folderId,
-        "instructions.json",
-        { instructions: project.instructions ?? "" },
-        existing.instructions
-      ),
-    ]);
+  // Best-effort cleanup of the legacy per-project subfolder, if this
+  // project was previously synced under the old 5-file layout. Cached
+  // folderId is the LEGACY subfolder ID when it differs from the root.
+  // Failures here don't fail the sync — the user can also delete manually.
+  const legacyFolderId = project.cloud?.folderId;
+  if (legacyFolderId && legacyFolderId !== rootId) {
+    try {
+      await drive.files.update({
+        fileId: legacyFolderId,
+        requestBody: { trashed: true },
+      });
+    } catch (err) {
+      console.warn(
+        `[drive] failed to trash legacy folder ${legacyFolderId}:`,
+        err
+      );
+    }
+  }
 
   return {
-    folderId,
-    files: {
-      meta: metaId,
-      script: scriptId,
-      feedback: feedbackId,
-      chats: chatsId,
-      instructions: instructionsId,
-    },
+    folderId: rootId,
+    fileId,
     lastSyncedAt: new Date().toISOString(),
   };
 }
 
 type CloudProject = Pick<
   Project,
-  "id" | "title" | "script" | "instructions" | "feedback" | "chats" |
-  "references" | "suggestions" | "createdAt" | "updatedAt"
+  | "id"
+  | "title"
+  | "script"
+  | "instructions"
+  | "feedback"
+  | "chats"
+  | "references"
+  | "suggestions"
+  | "createdAt"
+  | "updatedAt"
 > & { cloud: DriveMetadata };
 
+function fileToCloudProject(
+  file: ProjectFile,
+  cloud: DriveMetadata
+): CloudProject {
+  return {
+    id: file.id,
+    title: file.title,
+    script: file.script ?? null,
+    instructions: file.instructions ?? "",
+    feedback: file.feedback ?? [],
+    chats: file.chats ?? [],
+    references: file.references ?? [],
+    suggestions: [],
+    createdAt: file.createdAt,
+    updatedAt: file.updatedAt,
+    cloud,
+  };
+}
+
 /**
- * Load every project in the "Midnight Carnival" folder from Drive. Used on
- * sign-in to populate the local store with cloud data.
+ * Legacy 5-file project layout: { meta.json, script.json, feedback.json,
+ * chats.json, instructions.json } inside a per-project subfolder. Still
+ * read on sign-in so users who haven't re-synced yet don't lose data.
+ */
+type LegacyMetaFile = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+async function readLegacyFolder(
+  files: DriveFiles,
+  folder: { id: string; name?: string | null }
+): Promise<CloudProject | null> {
+  const fileRes = await files.list({
+    q: `'${folder.id}' in parents and trashed = false`,
+    fields: "files(id, name)",
+    spaces: "drive",
+    pageSize: 50,
+  });
+  const byName: Record<string, string> = {};
+  for (const f of fileRes.data.files ?? []) {
+    if (f.id && f.name) byName[f.name] = f.id;
+  }
+  if (!byName["meta.json"]) return null;
+
+  const [meta, script, feedback, chats, instructions] = await Promise.all([
+    readJson<LegacyMetaFile>(files, byName["meta.json"]),
+    byName["script.json"]
+      ? readJson<Project["script"]>(files, byName["script.json"])
+      : Promise.resolve(null),
+    byName["feedback.json"]
+      ? readJson<Project["feedback"]>(files, byName["feedback.json"])
+      : Promise.resolve([] as Project["feedback"]),
+    byName["chats.json"]
+      ? readJson<Project["chats"]>(files, byName["chats.json"])
+      : Promise.resolve([] as Project["chats"]),
+    byName["instructions.json"]
+      ? readJson<{ instructions: string }>(files, byName["instructions.json"])
+      : Promise.resolve(null),
+  ]);
+  if (!meta) return null;
+
+  // Legacy fileId doesn't exist; use the meta.json file ID as a placeholder
+  // so the next push can find/replace correctly via appProperties lookup.
+  // The legacy folderId is preserved so syncProjectToDrive can trash it
+  // after the first successful new-layout push.
+  return {
+    id: meta.id,
+    title: meta.title,
+    script: script ?? null,
+    instructions: instructions?.instructions ?? "",
+    feedback: feedback ?? [],
+    chats: chats ?? [],
+    references: [],
+    suggestions: [],
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    cloud: {
+      folderId: folder.id,
+      fileId: byName["meta.json"],
+      lastSyncedAt: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * Load every project from Drive on sign-in. Reads both the current
+ * single-file layout and the legacy 5-file-subfolder layout, deduping by
+ * project ID (current layout wins).
  */
 export async function loadProjectsFromDrive(
   accessToken: string
@@ -247,82 +351,57 @@ export async function loadProjectsFromDrive(
   const drive = client(accessToken);
   const rootId = await ensureRootFolder(accessToken);
 
-  // List project subfolders under the root.
+  // (1) Current layout: JSON files directly in the root folder, each
+  // tagged with appProperties.projectId.
+  const fileRes = await drive.files.list({
+    q: [
+      `'${rootId}' in parents`,
+      `mimeType != '${FOLDER_MIME}'`,
+      "trashed = false",
+    ].join(" and "),
+    fields: "files(id, name, appProperties)",
+    spaces: "drive",
+    pageSize: 200,
+  });
+
+  const byProjectId = new Map<string, CloudProject>();
+
+  for (const file of fileRes.data.files ?? []) {
+    if (!file.id) continue;
+    const content = await readJson<ProjectFile>(drive.files, file.id);
+    if (!content || typeof content !== "object" || !content.id) continue;
+
+    byProjectId.set(content.id, fileToCloudProject(content, {
+      folderId: rootId,
+      fileId: file.id,
+      lastSyncedAt: new Date().toISOString(),
+    }));
+  }
+
+  // (2) Legacy layout: per-project subfolders containing 5 JSON files.
+  // Only adopt a legacy project if the current layout doesn't already
+  // have one for the same project ID.
   const folderRes = await drive.files.list({
-    q: `'${rootId}' in parents and mimeType = '${FOLDER_MIME}' and trashed = false`,
+    q: [
+      `'${rootId}' in parents`,
+      `mimeType = '${FOLDER_MIME}'`,
+      "trashed = false",
+    ].join(" and "),
     fields: "files(id, name)",
     spaces: "drive",
     pageSize: 200,
   });
-  const folders = folderRes.data.files ?? [];
 
-  const projects: CloudProject[] = [];
-
-  for (const folder of folders) {
+  for (const folder of folderRes.data.files ?? []) {
     if (!folder.id) continue;
-
-    // List the JSON files in this project folder.
-    const fileRes = await drive.files.list({
-      q: `'${folder.id}' in parents and trashed = false`,
-      fields: "files(id, name)",
-      spaces: "drive",
-      pageSize: 50,
+    const legacy = await readLegacyFolder(drive.files, {
+      id: folder.id,
+      name: folder.name,
     });
-    const filesByName: Record<string, string> = {};
-    for (const f of fileRes.data.files ?? []) {
-      if (f.id && f.name) filesByName[f.name] = f.id;
-    }
-
-    if (!filesByName["meta.json"]) {
-      // Not a project folder we recognize — skip silently.
-      continue;
-    }
-
-    const [meta, script, feedback, chats, instructions] = await Promise.all([
-      readJson<ProjectMetaFile>(drive.files, filesByName["meta.json"]),
-      filesByName["script.json"]
-        ? readJson<Project["script"]>(drive.files, filesByName["script.json"])
-        : Promise.resolve(null),
-      filesByName["feedback.json"]
-        ? readJson<Project["feedback"]>(drive.files, filesByName["feedback.json"])
-        : Promise.resolve([] as Project["feedback"]),
-      filesByName["chats.json"]
-        ? readJson<Project["chats"]>(drive.files, filesByName["chats.json"])
-        : Promise.resolve([] as Project["chats"]),
-      filesByName["instructions.json"]
-        ? readJson<{ instructions: string }>(
-            drive.files,
-            filesByName["instructions.json"]
-          )
-        : Promise.resolve(null),
-    ]);
-
-    if (!meta) continue;
-
-    projects.push({
-      id: meta.id,
-      title: meta.title,
-      script: script ?? null,
-      instructions: instructions?.instructions ?? "",
-      feedback: feedback ?? [],
-      chats: chats ?? [],
-      references: [],
-      suggestions: [],
-      createdAt: meta.createdAt,
-      updatedAt: meta.updatedAt,
-      cloud: {
-        folderId: folder.id,
-        files: {
-          meta: filesByName["meta.json"],
-          script: filesByName["script.json"],
-          feedback: filesByName["feedback.json"],
-          chats: filesByName["chats.json"],
-          instructions: filesByName["instructions.json"],
-        },
-        lastSyncedAt: new Date().toISOString(),
-      },
-    });
+    if (!legacy) continue;
+    if (byProjectId.has(legacy.id)) continue;
+    byProjectId.set(legacy.id, legacy);
   }
 
-  return projects;
+  return Array.from(byProjectId.values());
 }

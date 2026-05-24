@@ -149,7 +149,7 @@ export const useProjectStore = create<ProjectStore>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         projects: state.projects,
@@ -163,10 +163,27 @@ export const useProjectStore = create<ProjectStore>()(
             ...p,
             script: null,
           })) as Project[];
-          return {
+          persisted = {
             projects,
             currentProjectId: old.currentProjectId ?? null,
           };
+        }
+        // v2 → v3: Drive layout changed from 5-files-per-project to
+        // 1-file-per-project. The legacy `cloud.files` map is no longer
+        // read; the next sync will write the new layout and the service
+        // trashes the old subfolder. We strip `cloud.files` so the type
+        // matches the new DriveMetadata shape — `folderId` still points
+        // at the legacy subfolder, which is the signal the service uses
+        // to know cleanup is needed on first sync.
+        if (version < 3 && persisted && typeof persisted === "object") {
+          const data = persisted as {
+            projects?: Array<{
+              cloud?: { folderId?: string; files?: unknown; lastSyncedAt?: string };
+            }>;
+          };
+          for (const p of data.projects ?? []) {
+            if (p.cloud && "files" in p.cloud) delete p.cloud.files;
+          }
         }
         return persisted as ProjectStore;
       },

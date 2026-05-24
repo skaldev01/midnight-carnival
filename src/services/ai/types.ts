@@ -130,10 +130,15 @@ function screenplayToText(script: Screenplay): string {
 }
 
 /**
- * Parse an LLM response (possibly wrapped in markdown fences) into our
- * structured GenerateResult. Falls back to plain-text content with
- * empty suggestions if the JSON is invalid — the user still sees the
- * model's reply, they just don't get inline edits.
+ * Parse an LLM response into our structured GenerateResult. Handles three
+ * shapes models actually produce:
+ *   1. Pure JSON (the contract).
+ *   2. JSON wrapped in ```json fences.
+ *   3. JSON surrounded by narration ("Here are some rewrites... {...}").
+ *
+ * Falls back to plain-text content with empty suggestions only when no
+ * parseable JSON object can be located. In that case the user still sees
+ * the reply; they just don't get inline edits.
  */
 export function parseAIResponse(
   raw: string,
@@ -144,15 +149,9 @@ export function parseAIResponse(
   // Strip markdown fence wrappers if a model adds one
   // despite instructions to the contrary.
   const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/);
-  const jsonStr = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonStr);
-  } catch {
-    // Fallback: treat the whole thing as the conversational reply.
-    return { content: raw, provider, suggestions: [] };
-  }
+  const parsed = tryParseJson(candidate) ?? extractFirstJsonObject(candidate);
 
   if (!isObject(parsed)) {
     return { content: raw, provider, suggestions: [] };
@@ -168,6 +167,51 @@ export function parseAIResponse(
     : [];
 
   return { content, provider, suggestions };
+}
+
+function tryParseJson(s: string): unknown | null {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Walk the string, tracking brace depth while ignoring braces inside
+ * strings (so `{ "foo": "}" }` parses correctly), and return the first
+ * balanced top-level `{...}` substring parsed as JSON. Returns null if
+ * none parses cleanly.
+ */
+function extractFirstJsonObject(s: string): unknown | null {
+  const start = s.indexOf("{");
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return tryParseJson(s.slice(start, i + 1));
+      }
+    }
+  }
+  return null;
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
