@@ -1284,7 +1284,7 @@ button { font-family: inherit; }
 .script-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 36px 0 80px;
+  padding: 0 0 80px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1485,7 +1485,7 @@ button { font-family: inherit; }
 .format-bar {
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 10;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1493,7 +1493,7 @@ button { font-family: inherit; }
   padding: 10px 28px;
   background: var(--bg);
   border-bottom: 1px solid var(--border-soft);
-  margin: -36px 0 16px;  /* pull up over .script-scroll's top padding */
+  margin: 0 0 16px;
   align-self: stretch;   /* full width inside column-flex parent */
 }
 
