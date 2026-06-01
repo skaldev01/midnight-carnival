@@ -72,6 +72,13 @@ export default function ChatMessages({
               )}
             </div>
             <div className="message-content">{m.content}</div>
+            {!isUser && m.suggestionCount !== undefined && m.suggestionCount > 0 && (
+              <div className="message-suggestion-badge">
+                {m.suggestionCount === 1
+                  ? "1 edit suggestion added — review in the script panel"
+                  : `${m.suggestionCount} edit suggestions added — review in the script panel`}
+              </div>
+            )}
           </div>
         );
       })}

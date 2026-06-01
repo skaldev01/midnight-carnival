@@ -73,6 +73,14 @@ export function ArrowUpIcon(props: IconProps) {
   );
 }
 
+export function ChevronUpIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" {...baseStroke} {...props}>
+      <polyline points="18 15 12 9 6 15" />
+    </svg>
+  );
+}
+
 export function BoltIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" {...baseStroke} strokeWidth={2.5} {...props}>

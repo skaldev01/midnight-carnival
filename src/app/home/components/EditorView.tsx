@@ -1,8 +1,10 @@
 "use client";
 
+import { useCallback, useRef } from "react";
 import { useCurrentProject } from "@/hooks/useProjects";
 import { useChat } from "@/hooks/useChat";
-import { FileIcon } from "./icons";
+import { useReferenceUpload } from "@/hooks/useReferenceUpload";
+import { FileIcon, CloseIcon } from "./icons";
 import ChatMessages from "./Chat/ChatMessages";
 import ChatInput from "./Chat/ChatInput";
 
@@ -15,6 +17,26 @@ export default function EditorView({ active }: Props) {
   const title = project?.title ?? "Untitled";
   const instructions = project?.instructions?.trim() ?? "";
   const references = project?.references ?? [];
+
+  const { isUploading, upload, remove } = useReferenceUpload();
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleAddClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        upload(file);
+      }
+      // Reset so the same file can be re-uploaded after removal.
+      e.target.value = "";
+    },
+    [upload]
+  );
 
   const {
     messages,
@@ -32,12 +54,41 @@ export default function EditorView({ active }: Props) {
         <div className="chat-title">{title}</div>
         <div className="chat-context">
           {references.map((ref) => (
-            <span key={ref.id} className="context-chip">
+            <span key={ref.id} className="context-chip context-chip--ref">
               <FileIcon className="chip-icon" />
-              {ref.name}
+              <span className="chip-name" title={ref.name}>
+                {ref.name}
+              </span>
+              <button
+                type="button"
+                className="chip-remove"
+                onClick={() => remove(ref.id)}
+                aria-label={`Remove ${ref.name}`}
+                title="Remove reference"
+              >
+                <CloseIcon width={9} height={9} />
+              </button>
             </span>
           ))}
-          <button type="button" className="context-add">+ Add reference</button>
+
+          {/* Hidden file input — triggered by the button below */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+            style={{ display: "none" }}
+            onChange={handleFileChange}
+          />
+
+          <button
+            type="button"
+            className={`context-add${isUploading ? " context-add--busy" : ""}`}
+            onClick={handleAddClick}
+            disabled={isUploading}
+            title="Attach a PDF, DOCX, or TXT file as context for the AI"
+          >
+            {isUploading ? "Reading…" : "+ Add reference"}
+          </button>
         </div>
       </header>
 

@@ -83,7 +83,7 @@ export default function FeedbackOutput({
           disabled={isApplying || !canApply}
           title={
             !canApply
-              ? "This feedback has no actionable suggestions to apply"
+              ? "This feedback has no actionable notes to apply"
               : undefined
           }
         >

@@ -38,7 +38,7 @@ export async function generate(
 ): Promise<GenerateResult> {
   const openai = getClient();
   const model = process.env.OPENAI_MODEL || DEFAULT_MODEL;
-  const system = buildSystemPrompt(input.instructions, input.script);
+  const system = input._systemPromptOverride ?? buildSystemPrompt(input.instructions, input.script, input.references);
 
   try {
     const completion = await openai.chat.completions.create({

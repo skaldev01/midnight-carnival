@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import * as openaiService from "@/services/ai/openaiService";
 import * as anthropicService from "@/services/ai/anthropicService";
-import { AIError } from "@/services/ai/types";
+import { AIError, type ReferenceDoc } from "@/services/ai/types";
 import type { Provider } from "@/types/chat";
 import type { Screenplay } from "@/types/screenplay";
 
@@ -13,6 +13,7 @@ type RequestBody = {
   prompt?: unknown;
   script?: unknown;
   instructions?: unknown;
+  references?: unknown;
 };
 
 function isProvider(v: unknown): v is Provider {
@@ -50,10 +51,28 @@ export async function POST(req: Request) {
   const instructions =
     typeof body.instructions === "string" ? body.instructions : "";
 
+  // Reference documents: validate shape, drop any with missing fields.
+  const rawRefs = Array.isArray(body.references) ? body.references : [];
+  const references: ReferenceDoc[] = rawRefs
+    .filter(
+      (r): r is ReferenceDoc =>
+        typeof r === "object" &&
+        r !== null &&
+        typeof (r as ReferenceDoc).name === "string" &&
+        typeof (r as ReferenceDoc).content === "string"
+    )
+    .map((r) => ({ name: r.name, content: r.content }));
+
+  if (references.length > 0) {
+    console.info(
+      `[/api/ai] ${references.length} reference(s): ${references.map((r) => r.name).join(", ")}`
+    );
+  }
+
   const service = provider === "claude" ? anthropicService : openaiService;
 
   try {
-    const result = await service.generate({ prompt, script, instructions });
+    const result = await service.generate({ prompt, script, instructions, references });
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof AIError) {

@@ -6,6 +6,7 @@ import {
   useUpdateProject,
 } from "@/hooks/useProjects";
 import { useSuggestions } from "@/hooks/useSuggestions";
+import { useSuggestionNavigator } from "@/hooks/useSuggestionNavigator";
 import type { ScreenplayElementType } from "@/types/screenplay";
 import { exportScreenplayToPdf } from "@/services/screenplay/pdfExporter";
 import { toast } from "@/store/toastStore";
@@ -14,6 +15,7 @@ import { CheckIcon, DownloadIcon, UploadIcon } from "./icons";
 import ScriptUploadModal from "./ScriptUploadModal";
 import ScriptEditor from "./ScriptEditor";
 import SuggestionReview from "./ScriptEditor/SuggestionReview";
+import SuggestionNavigator from "./SuggestionNavigator";
 
 type Props = {
   scriptFocused: boolean;
@@ -37,13 +39,16 @@ export default function ScriptPanel({
   const updateProject = useUpdateProject();
   const [uploadOpen, setUploadOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
-  const { hasPending, pendingCount, acceptAll, rejectAll } = useSuggestions();
+  const { hasPending, pendingCount, pending, accept, reject, acceptAll, rejectAll } =
+    useSuggestions();
+
+  // Navigator lives here so it can be rendered outside .script-scroll
+  // (sticky/fixed inside an overflow:auto container is unreliable).
+  const nav = useSuggestionNavigator(pending);
 
   const handleExportPdf = () => {
     if (!project?.script || isExporting) return;
     setIsExporting(true);
-    // Yield so the disabled state renders before jsPDF starts blocking
-    // the main thread; ensures the user sees "Exporting…" immediately.
     window.setTimeout(() => {
       try {
         exportScreenplayToPdf(project.script!, project.title);
@@ -70,6 +75,7 @@ export default function ScriptPanel({
     updateProject(project.id, {
       script: {
         id: makeScreenplayId(),
+        titlePage: null,
         scenes: [{ type: "action", content: "" }],
       },
     });
@@ -88,6 +94,7 @@ export default function ScriptPanel({
       >
         {scriptFocused ? "›" : "‹"}
       </button>
+
       <header className="script-header">
         <div>
           <div className="script-title">{title}</div>
@@ -148,7 +155,12 @@ export default function ScriptPanel({
       <div className="script-scroll">
         {script ? (
           hasPending ? (
-            <SuggestionReview />
+            <SuggestionReview
+              pending={pending}
+              nav={nav}
+              onAccept={accept}
+              onReject={reject}
+            />
           ) : (
             <ScriptEditor />
           )
@@ -159,6 +171,12 @@ export default function ScriptPanel({
           />
         )}
       </div>
+
+      {/* Navigator floats over the panel at the bottom — outside the scroll
+          container so position:fixed works without fighting overflow:auto. */}
+      {hasPending && (
+        <SuggestionNavigator nav={nav} total={pendingCount} />
+      )}
 
       <ScriptUploadModal
         open={uploadOpen}

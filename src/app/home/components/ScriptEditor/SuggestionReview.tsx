@@ -2,10 +2,14 @@
 
 import { Fragment } from "react";
 import { useCurrentProject } from "@/hooks/useProjects";
-import { useSuggestions } from "@/hooks/useSuggestions";
+import type { SuggestionNavigatorHandle } from "@/hooks/useSuggestionNavigator";
 import type { ScreenplayElement } from "@/types/screenplay";
 import type { Suggestion } from "@/types/suggestion";
 import { CheckIcon, CloseIcon } from "../icons";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Static element renderer
+// ─────────────────────────────────────────────────────────────────────────────
 
 function renderElement(el: ScreenplayElement, key: string) {
   switch (el.type) {
@@ -23,11 +27,7 @@ function renderElement(el: ScreenplayElement, key: string) {
       );
     case "transition":
       return (
-        <div
-          key={key}
-          className="scene-heading"
-          style={{ textAlign: "right" }}
-        >
+        <div key={key} className="scene-heading" style={{ textAlign: "right" }}>
           {el.content}
         </div>
       );
@@ -40,7 +40,7 @@ function renderElement(el: ScreenplayElement, key: string) {
     case "parenthetical":
       return (
         <div key={key} className="dialogue-block">
-          <div className="dialogue">{el.content}</div>
+          <div className="parenthetical">{el.content}</div>
         </div>
       );
     case "dialogue":
@@ -52,21 +52,30 @@ function renderElement(el: ScreenplayElement, key: string) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Inline suggestion block
+// ─────────────────────────────────────────────────────────────────────────────
+
 type InlineProps = {
   suggestion: Suggestion;
+  isFocused: boolean;
   onAccept: () => void;
   onReject: () => void;
 };
 
-function InlineSuggestion({ suggestion, onAccept, onReject }: InlineProps) {
+function InlineSuggestion({ suggestion, isFocused, onAccept, onReject }: InlineProps) {
   const source =
     suggestion.source === "claude"
       ? "Claude"
       : suggestion.source === "gpt"
         ? "ChatGPT"
         : "AI";
+
   return (
-    <div className="suggestion-block">
+    <div
+      className={`suggestion-block${isFocused ? " suggestion-block--focused" : ""}`}
+      data-suggestion-id={suggestion.id}
+    >
       <div className="suggestion-meta">
         <span className="suggestion-tag">AI Suggestion · Rewrite</span>
         <span className="suggestion-source">{source}</span>
@@ -76,19 +85,11 @@ function InlineSuggestion({ suggestion, onAccept, onReject }: InlineProps) {
         <span className="insertion">{suggestion.newText}</span>
       </div>
       <div className="suggestion-actions">
-        <button
-          type="button"
-          className="action-btn reject"
-          onClick={onReject}
-        >
+        <button type="button" className="action-btn reject" onClick={onReject}>
           <CloseIcon width={11} height={11} />
           Reject
         </button>
-        <button
-          type="button"
-          className="action-btn accept"
-          onClick={onAccept}
-        >
+        <button type="button" className="action-btn accept" onClick={onAccept}>
           <CheckIcon width={11} height={11} />
           Accept
         </button>
@@ -97,39 +98,77 @@ function InlineSuggestion({ suggestion, onAccept, onReject }: InlineProps) {
   );
 }
 
-export default function SuggestionReview() {
+// ─────────────────────────────────────────────────────────────────────────────
+// SuggestionReview
+// nav is owned by ScriptPanel so the navigator pill can live outside the
+// overflow scroll container where sticky positioning works correctly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type Props = {
+  pending: Suggestion[];
+  nav: SuggestionNavigatorHandle;
+  onAccept: (id: string) => void;
+  onReject: (id: string) => void;
+};
+
+export default function SuggestionReview({ pending, nav, onAccept, onReject }: Props) {
   const project = useCurrentProject();
-  const { pending, accept, reject } = useSuggestions();
 
   if (!project?.script) return null;
 
-  // First-match wins: each element gets at most one inline suggestion.
-  // (If multiple pending suggestions share the same oldText, the rest
-  // stay pending in the store and would surface again after the first
-  // resolves.)
+  const titlePage = project.script.titlePage;
   const usedSuggestionIds = new Set<string>();
 
   return (
-    <div className="script-page">
-      <div className="page-number">1.</div>
-      {project.script.scenes.map((el, idx) => {
-        const match = pending.find(
-          (s) => s.oldText === el.content && !usedSuggestionIds.has(s.id)
-        );
-        if (match) {
-          usedSuggestionIds.add(match.id);
-          return (
-            <Fragment key={`s-${match.id}`}>
-              <InlineSuggestion
-                suggestion={match}
-                onAccept={() => accept(match.id)}
-                onReject={() => reject(match.id)}
-              />
-            </Fragment>
+    <>
+      {titlePage && (
+        <div className="script-page title-page-readonly">
+          <div className="title-page-label">Title Page</div>
+          {titlePage.title && (
+            <div className="title-page-ro-title">{titlePage.title}</div>
+          )}
+          <div className="title-page-written-by">Written by</div>
+          {titlePage.authors.map((a, i) => (
+            <div key={i} className="title-page-ro-author">{a}</div>
+          ))}
+          {titlePage.draft && (
+            <div className="title-page-ro-draft">{titlePage.draft}</div>
+          )}
+          {titlePage.contact && (
+            <div className="title-page-ro-contact">{titlePage.contact}</div>
+          )}
+        </div>
+      )}
+
+      <div className="script-page">
+        <div className="page-number">1.</div>
+        {project.script.scenes.map((el, idx) => {
+          const match = pending.find(
+            (s) => s.oldText === el.content && !usedSuggestionIds.has(s.id)
           );
-        }
-        return renderElement(el, `el-${idx}`);
-      })}
-    </div>
+          if (match) {
+            usedSuggestionIds.add(match.id);
+            const isFocused = nav.focusedId === match.id;
+            return (
+              <Fragment key={`s-${match.id}`}>
+                <InlineSuggestion
+                  suggestion={match}
+                  isFocused={isFocused}
+                  onAccept={() => {
+                    nav.jumpAfterResolve(match.id, "next");
+                    onAccept(match.id);
+                  }}
+                  onReject={() => {
+                    nav.jumpAfterResolve(match.id, "next");
+                    onReject(match.id);
+                  }}
+                />
+              </Fragment>
+            );
+          }
+          return renderElement(el, `el-${idx}`);
+        })}
+      </div>
+    </>
   );
 }

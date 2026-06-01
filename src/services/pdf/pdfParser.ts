@@ -78,17 +78,30 @@ export async function extractPdfText(
   return text;
 }
 
+// Standard screenplay PDFs are 8.5" wide (612pt). The left body margin
+// sits at ~1.5" (108pt) and Courier 12pt glyphs are ~7.2pt wide, giving
+// 10 characters per inch. We record raw X in points so downstream
+// classification can use real measurements rather than fragile space counts.
+const POINTS_PER_CHAR = 7.2; // Courier 12pt at 72dpi
+const PAGE_LEFT_MARGIN_PT = 72; // ~1 inch minimum left margin in most PDFs
+
 /**
- * Group items by Y coordinate (visual line), sort by X within a line,
- * preserve the leading indent as spaces so character cues remain
- * detectable downstream.
+ * Group items by Y coordinate (visual line), sort by X within a line.
+ * Each output line is prefixed with its column offset (in Courier characters
+ * from the page left edge) so the heuristic parser can classify elements by
+ * their horizontal position rather than by space count, which is unreliable
+ * across different PDF producers.
+ *
+ * Output format per line:  "<col>|<text>"
+ * e.g. "0|INT. BEDROOM - NIGHT" or "25|JOHN" or "15|Where are you going?"
  */
 function reconstructPageText(items: TextItem[]): string {
   const lineBuckets = new Map<number, TextItem[]>();
 
   for (const item of items) {
     if (!item.str) continue;
-    const y = Math.round(item.transform[5]);
+    // Round Y to nearest 2pt to merge items on the same visual line.
+    const y = Math.round(item.transform[5] / 2) * 2;
     const list = lineBuckets.get(y);
     if (list) list.push(item);
     else lineBuckets.set(y, [item]);
@@ -97,14 +110,29 @@ function reconstructPageText(items: TextItem[]): string {
   // PDF Y grows upward → sort descending so top-of-page is first.
   const yKeys = [...lineBuckets.keys()].sort((a, b) => b - a);
 
+  // Find the minimum X across substantive lines to use as the left baseline.
+  // We exclude very short items (page numbers, single-letter artefacts) which
+  // can appear further left than the body margin and skew column computation.
+  let minX = Infinity;
+  for (const y of yKeys) {
+    const lineItems = lineBuckets.get(y)!;
+    const lineText = lineItems.map((it) => it.str).join("").trim();
+    // Only use lines with ≥4 characters as baseline candidates.
+    if (lineText.length < 4) continue;
+    const first = lineItems.sort((a, b) => a.transform[4] - b.transform[4])[0];
+    if (first) minX = Math.min(minX, first.transform[4]);
+  }
+  if (!isFinite(minX)) minX = PAGE_LEFT_MARGIN_PT;
+
   const lines: string[] = [];
   for (const y of yKeys) {
     const lineItems = lineBuckets.get(y)!.sort(
       (a, b) => a.transform[4] - b.transform[4]
     );
 
-    const firstX = lineItems[0]?.transform[4] ?? 0;
-    const indent = Math.max(0, Math.round(firstX / 6));
+    const firstX = lineItems[0]?.transform[4] ?? minX;
+    // Column offset in Courier characters from the leftmost body text.
+    const col = Math.max(0, Math.round((firstX - minX) / POINTS_PER_CHAR));
 
     const text = lineItems
       .map((it) => it.str)
@@ -113,7 +141,7 @@ function reconstructPageText(items: TextItem[]): string {
       .trim();
     if (!text) continue;
 
-    lines.push(" ".repeat(indent) + text);
+    lines.push(`${col}|${text}`);
   }
 
   return lines.join("\n");

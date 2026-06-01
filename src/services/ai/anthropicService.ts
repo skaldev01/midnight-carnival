@@ -42,7 +42,7 @@ export async function generate(
 ): Promise<GenerateResult> {
   const anthropic = getClient();
   const model = process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-  const system = buildSystemPrompt(input.instructions, input.script);
+  const system = input._systemPromptOverride ?? buildSystemPrompt(input.instructions, input.script, input.references);
 
   try {
     const response = await anthropic.messages.create({

@@ -137,9 +137,9 @@ export function useFeedback() {
   );
 
   /**
-   * Apply Feedback: convert the latest feedback's suggestion bullets into
-   * concrete script edits via the regular /api/ai suggestion engine.
-   * Resulting suggestions land in currentProject.suggestions and trigger
+   * Apply Feedback: transform ALL sections of the latest feedback into
+   * concrete screenplay edit suggestions via the dedicated apply-feedback
+   * endpoint. Results land in currentProject.suggestions and trigger
    * review mode in the script panel.
    */
   const apply = useCallback(async () => {
@@ -154,35 +154,38 @@ export function useFeedback() {
       setError("No feedback to apply. Generate feedback first.");
       return;
     }
-    const notes = lastFeedback.sections.suggestions;
-    if (notes.length === 0) {
-      setError("This feedback has no actionable suggestions to apply.");
+
+    // Collect total actionable note count across all sections.
+    const totalNotes =
+      lastFeedback.sections.issues.length +
+      lastFeedback.sections.characterNotes.length +
+      lastFeedback.sections.suggestions.length;
+
+    if (totalNotes === 0) {
+      setError("This feedback has no actionable notes to apply.");
       return;
     }
+
     if (!proj.script || proj.script.scenes.length === 0) {
       setError("No script to apply feedback to.");
       return;
     }
 
+    console.info(
+      `[useFeedback] applying feedback "${lastFeedback.title}" — ` +
+        `${totalNotes} notes, ${proj.script.scenes.length} elements, provider=${provider}`
+    );
+
     setError(null);
     setApplying(true);
 
-    const applyPrompt = [
-      "Convert each of these feedback notes into a concrete script rewrite.",
-      "For each note, find the most relevant element in the script and produce an oldText/newText suggestion.",
-      "Only include suggestions where the oldText is an exact match of a real element.",
-      "",
-      "Feedback notes:",
-      ...notes.map((n, i) => `${i + 1}. ${n}`),
-    ].join("\n");
-
     try {
-      const response = await fetch("/api/ai", {
+      const response = await fetch("/api/ai/apply-feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           provider,
-          prompt: applyPrompt,
+          feedback: lastFeedback,
           script: proj.script,
           instructions: proj.instructions ?? "",
         }),
@@ -203,15 +206,25 @@ export function useFeedback() {
       const currentScript = useProjectStore
         .getState()
         .getProjectById(pid)?.script;
+
       const newSuggestions = buildSuggestionsFromRaw(
         data.suggestions,
         currentScript ?? null,
         data.provider ?? provider
       );
 
+      console.info(
+        `[useFeedback] ${data.suggestions?.length ?? 0} raw → ` +
+          `${newSuggestions.length} validated suggestions`
+      );
+
       if (newSuggestions.length === 0) {
+        // The AI responded but all suggestions failed validation. This can
+        // happen with very short scripts where there are no matching elements.
+        // Surface a helpful message rather than a generic failure.
         setError(
-          "AI could not produce concrete edits from these notes. Try rewording the prompt."
+          "The AI produced edits but none matched your current script text exactly. " +
+            "Try generating fresh feedback or editing a few lines manually first."
         );
         return;
       }
@@ -223,9 +236,7 @@ export function useFeedback() {
       });
     } catch (err) {
       const message =
-        err instanceof Error
-          ? err.message
-          : "Could not apply feedback.";
+        err instanceof Error ? err.message : "Could not apply feedback.";
       setError(message);
     } finally {
       setApplying(false);

@@ -8,6 +8,7 @@ const CYCLE_ORDER: ScreenplayElementType[] = [
   "character",
   "parenthetical",
   "dialogue",
+  "transition",
 ];
 
 function currentType(state: {

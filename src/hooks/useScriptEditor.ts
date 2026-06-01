@@ -48,13 +48,15 @@ export function useScriptEditor(): ScriptEditorHandle {
         .getState()
         .getProjectById(pid)?.script ?? null;
       const sid = existingScript?.id ?? makeScreenplayId();
+      // Preserve the title page that lives outside the TipTap document.
+      const titlePage = existingScript?.titlePage ?? null;
       const scenes = tiptapDocToScenes(editor.getJSON());
 
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         useProjectStore
           .getState()
-          .updateProject(pid, { script: { id: sid, scenes } });
+          .updateProject(pid, { script: { id: sid, titlePage, scenes } });
       }, SAVE_DEBOUNCE_MS);
     },
     onSelectionUpdate: ({ editor }) => {

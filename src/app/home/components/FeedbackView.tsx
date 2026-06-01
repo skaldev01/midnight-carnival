@@ -1,6 +1,7 @@
 "use client";
 
 import { useFeedback } from "@/hooks/useFeedback";
+import { useFeedbackStore } from "@/store/feedbackStore";
 import FeedbackForm from "./Feedback/FeedbackForm";
 import FeedbackOutput from "./Feedback/FeedbackOutput";
 
@@ -23,13 +24,23 @@ export default function FeedbackView({ active, onApplyToEditor }: Props) {
     apply,
   } = useFeedback();
 
-  const canApply = Boolean(latest && latest.sections.suggestions.length > 0);
+  // Apply is possible as long as any actionable section has content —
+  // issues and characterNotes are equally actionable, not just suggestions[].
+  const canApply = Boolean(
+    latest &&
+      (latest.sections.issues.length > 0 ||
+        latest.sections.characterNotes.length > 0 ||
+        latest.sections.suggestions.length > 0)
+  );
 
   const handleApply = async () => {
     await apply();
-    // Switch to the Editor tab so the user sees the inline review pane
-    // populated with the new suggestions.
-    onApplyToEditor();
+    // Only switch to the Editor tab when apply() succeeded (no error set).
+    // If it failed, keep the user on the Feedback tab so they can see the error.
+    const hasError = useFeedbackStore.getState().error !== null;
+    if (!hasError) {
+      onApplyToEditor();
+    }
   };
 
   return (

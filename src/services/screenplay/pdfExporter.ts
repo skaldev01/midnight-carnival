@@ -3,6 +3,7 @@ import type {
   Screenplay,
   ScreenplayElement,
   ScreenplayElementType,
+  TitlePage,
 } from "@/types/screenplay";
 
 // Industry-standard screenplay layout. Units in inches; Courier 12pt at
@@ -104,6 +105,70 @@ function sanitizeFilename(name: string): string {
   return cleaned || "screenplay";
 }
 
+// ---------------------------------------------------------------------------
+// Title page renderer
+// ---------------------------------------------------------------------------
+// Industry-standard title page:
+//   - Title: centred vertically in the upper-middle third of the page
+//   - "Written by" + author names: centred just below the title
+//   - Draft info: centred below authors
+//   - Contact: bottom-left corner
+// ---------------------------------------------------------------------------
+function writeTitlePage(doc: jsPDF, tp: TitlePage): void {
+  const centerX = PAGE_WIDTH / 2;
+
+  // Title — start at roughly 1/3 down the page.
+  let y = PAGE_HEIGHT / 3;
+
+  if (tp.title) {
+    doc.setFont("courier", "bold");
+    doc.setFontSize(14);
+    const titleLines: string[] = doc.splitTextToSize(
+      tp.title.toUpperCase(),
+      PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
+    );
+    for (const line of titleLines) {
+      doc.text(line, centerX, y, { align: "center" });
+      y += LINE_HEIGHT * 1.5;
+    }
+    y += LINE_HEIGHT; // gap before "Written by"
+  }
+
+  doc.setFont("courier", "normal");
+  doc.setFontSize(12);
+
+  if (tp.authors.length > 0) {
+    doc.text("Written by", centerX, y, { align: "center" });
+    y += LINE_HEIGHT * 1.4;
+    for (const author of tp.authors) {
+      doc.text(author, centerX, y, { align: "center" });
+      y += LINE_HEIGHT * 1.4;
+    }
+  }
+
+  if (tp.draft) {
+    y += LINE_HEIGHT * 0.5;
+    doc.text(tp.draft, centerX, y, { align: "center" });
+    y += LINE_HEIGHT;
+  }
+
+  // Contact — bottom-left corner, grows upward from the bottom margin.
+  if (tp.contact) {
+    const contactLines: string[] = doc.splitTextToSize(
+      tp.contact,
+      PAGE_WIDTH / 2
+    );
+    // Anchor the last line just above the bottom margin; draw lines upward.
+    const bottomAnchor = PAGE_HEIGHT - MARGIN_BOTTOM - LINE_HEIGHT * 0.5;
+    const blockHeight = contactLines.length * LINE_HEIGHT * 1.2;
+    let cy = bottomAnchor - blockHeight + LINE_HEIGHT * 1.2;
+    for (const line of contactLines) {
+      doc.text(line, MARGIN_LEFT, cy);
+      cy += LINE_HEIGHT * 1.2;
+    }
+  }
+}
+
 export function exportScreenplayToPdf(
   script: Screenplay,
   projectTitle: string,
@@ -112,6 +177,13 @@ export function exportScreenplayToPdf(
   doc.setFont("courier", "normal");
   doc.setFontSize(12);
 
+  // ── Title page (page 1 if present) ────────────────────────────────────
+  if (script.titlePage) {
+    writeTitlePage(doc, script.titlePage);
+    doc.addPage();
+  }
+
+  // ── Screenplay body ────────────────────────────────────────────────────
   const usableBottom = PAGE_HEIGHT - MARGIN_BOTTOM;
   let y = MARGIN_TOP;
   let firstOnPage = true;

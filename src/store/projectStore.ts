@@ -117,7 +117,7 @@ export const useProjectStore = create<ProjectStore>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 3,
+      version: 5,
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         projects: state.projects,
@@ -151,6 +151,38 @@ export const useProjectStore = create<ProjectStore>()(
           };
           for (const p of data.projects ?? []) {
             if (p.cloud && "files" in p.cloud) delete p.cloud.files;
+          }
+        }
+        // v3 → v4: Screenplay gained a `titlePage` field. Patch any stored
+        // script objects that pre-date this change so they satisfy the type.
+        if (version < 4 && persisted && typeof persisted === "object") {
+          const data = persisted as {
+            projects?: Array<{
+              script?: { titlePage?: unknown; scenes?: unknown[] } | null;
+            }>;
+          };
+          for (const p of data.projects ?? []) {
+            if (p.script && !("titlePage" in p.script)) {
+              p.script.titlePage = null;
+            }
+          }
+        }
+        // v4 → v5: ProjectReference gained type/content/uploadedAt fields.
+        // Existing references only had {id, name} — backfill with safe defaults
+        // so the type constraint is satisfied. Content is empty; the user will
+        // need to re-upload if they had any references stored (unlikely since
+        // the feature was never implemented).
+        if (version < 5 && persisted && typeof persisted === "object") {
+          const data = persisted as {
+            projects?: Array<{ references?: Array<Record<string, unknown>> }>;
+          };
+          for (const p of data.projects ?? []) {
+            p.references = (p.references ?? []).map((r) => ({
+              ...r,
+              type: r.type ?? "txt",
+              content: r.content ?? "",
+              uploadedAt: r.uploadedAt ?? new Date().toISOString(),
+            }));
           }
         }
         return persisted as ProjectStore;
