@@ -32,6 +32,7 @@ type Block = {
   width: number;
   blankLineBefore: boolean;
   align?: "left" | "right";
+  bold?: boolean;
 };
 
 function uppercase(s: string): string {
@@ -55,6 +56,7 @@ function elementToBlock(el: ScreenplayElement): Block | null {
         text: uppercase(text),
         width: WIDTH_ACTION,
         blankLineBefore: true,
+        bold: true,
       };
     case "action":
       return {
@@ -198,12 +200,19 @@ export function exportScreenplayToPdf(
     const block = elementToBlock(element);
     if (!block) continue;
 
+    // Honor source-PDF page breaks: start this element on a fresh page.
+    if (element.pageBreakBefore && !firstOnPage) {
+      newPage();
+    }
+
     if (block.blankLineBefore && !firstOnPage) {
       y += LINE_HEIGHT;
       if (y > usableBottom) {
         newPage();
       }
     }
+
+    doc.setFont("courier", block.bold ? "bold" : "normal");
 
     const lines: string[] = doc.splitTextToSize(block.text, block.width);
     for (const line of lines) {

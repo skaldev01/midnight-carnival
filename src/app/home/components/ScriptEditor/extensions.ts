@@ -65,6 +65,17 @@ export const ScreenplayElement = Extension.create({
               return { "data-element": attrs.elementType };
             },
           },
+          // Marks an element that starts a new page in the source PDF.
+          // Rendered as a visual page break (see globals.css).
+          pageBreakBefore: {
+            default: false,
+            parseHTML: (el: HTMLElement) =>
+              el.getAttribute("data-page-break") === "true",
+            renderHTML: (attrs: { pageBreakBefore?: boolean }) => {
+              if (!attrs.pageBreakBefore) return {};
+              return { "data-page-break": "true" };
+            },
+          },
         },
       },
     ];

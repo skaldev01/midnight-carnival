@@ -8,6 +8,12 @@ import type { TextItem } from "pdfjs-dist/types/src/display/api";
 
 export type ExtractProgress = (fraction: number) => void;
 
+// Sentinel line emitted between pages so downstream parsers can tell where
+// one PDF page ends and the next begins. A real screenplay title page is
+// exactly the first page; anything after the first page break is body
+// content (foreword, intro, "Let's call it 1981", etc.).
+export const PAGE_BREAK_MARKER = "\f"; // form-feed — won't collide with text
+
 let pdfjsModule: typeof import("pdfjs-dist") | null = null;
 
 async function loadPdfjs() {
@@ -69,7 +75,10 @@ export async function extractPdfText(
     onProgress?.(pageNum / pdf.numPages);
   }
 
-  const text = pages.join("\n\n");
+  // Join with an explicit page-break marker on its own line so the title-page
+  // splitter can stop at the first page boundary rather than swallowing later
+  // intro/foreword pages.
+  const text = pages.join(`\n${PAGE_BREAK_MARKER}\n`);
   if (!text.trim()) {
     throw new PdfExtractError(
       "We couldn't extract any text from this PDF. It may be a scanned image — try OCR first."
@@ -124,7 +133,32 @@ function reconstructPageText(items: TextItem[]): string {
   }
   if (!isFinite(minX)) minX = PAGE_LEFT_MARGIN_PT;
 
+  // Determine the typical single-line vertical gap so we can detect paragraph
+  // breaks. PDFs don't emit blank lines — a paragraph break is just a larger
+  // vertical gap between two text lines. We take the median consecutive gap as
+  // the baseline line height, then treat a gap in the paragraph-break RANGE as
+  // a blank line.
+  //
+  // We use a range (≥1.6× and ≤3× line height), not just a lower bound: a
+  // single blank line is ~2× line height, but the large gap between a page
+  // header / footer (or page number) and the body is many line-heights. Those
+  // huge gaps are NOT paragraph breaks, so capping the range avoids emitting a
+  // spurious blank line that would split a paragraph wrapping across a page.
+  const gaps: number[] = [];
+  for (let i = 1; i < yKeys.length; i++) {
+    const g = yKeys[i - 1] - yKeys[i]; // descending Y → positive gap
+    if (g > 0) gaps.push(g);
+  }
+  let lineGap = 12; // sensible Courier-12 default
+  if (gaps.length > 0) {
+    const sorted = [...gaps].sort((a, b) => a - b);
+    lineGap = sorted[Math.floor(sorted.length / 2)] || lineGap;
+  }
+  const paragraphGapMin = lineGap * 1.6;
+  const paragraphGapMax = lineGap * 3;
+
   const lines: string[] = [];
+  let prevY: number | null = null;
   for (const y of yKeys) {
     const lineItems = lineBuckets.get(y)!.sort(
       (a, b) => a.transform[4] - b.transform[4]
@@ -140,6 +174,17 @@ function reconstructPageText(items: TextItem[]): string {
       .replace(/\s+/g, " ")
       .trim();
     if (!text) continue;
+
+    // Emit a blank line when the vertical gap from the previous line falls in
+    // the paragraph-break range. Gaps larger than the range are header/footer
+    // separation, not paragraph breaks, and must not insert a blank line.
+    if (prevY !== null) {
+      const gap = prevY - y;
+      if (gap >= paragraphGapMin && gap <= paragraphGapMax) {
+        lines.push("");
+      }
+    }
+    prevY = y;
 
     lines.push(`${col}|${text}`);
   }

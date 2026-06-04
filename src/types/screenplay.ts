@@ -9,6 +9,13 @@ export type ScreenplayElementType =
 export interface ScreenplayElement {
   type: ScreenplayElementType;
   content: string;
+  /**
+   * When true, this element starts a new page in the original source PDF.
+   * Purely presentational — used to render a visual page break in the editor
+   * and a real page break on export. Optional so it never affects the
+   * suggestion-matching pipeline (which only reads `type`/`content`).
+   */
+  pageBreakBefore?: boolean;
 }
 
 /**

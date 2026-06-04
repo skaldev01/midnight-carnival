@@ -14,11 +14,22 @@ type Props = {
  * Uses the existing .script-page surface so it looks like a separate page.
  */
 export default function TitlePageEditor({ titlePage, onChange }: Props) {
+  // Older/persisted projects may carry a partial title page (e.g. missing
+  // `authors`). Coalesce every field to a safe default so the editor can't
+  // crash on `.join`/`.length` against undefined.
+  const tp: TitlePage = {
+    title: titlePage?.title ?? "",
+    authors: titlePage?.authors ?? [],
+    contact: titlePage?.contact ?? "",
+    draft: titlePage?.draft ?? "",
+    extra: titlePage?.extra ?? [],
+  };
+
   const set = useCallback(
     <K extends keyof TitlePage>(key: K, value: TitlePage[K]) => {
-      onChange({ ...titlePage, [key]: value });
+      onChange({ ...tp, [key]: value });
     },
-    [titlePage, onChange]
+    [tp, onChange]
   );
 
   const setAuthors = useCallback(
@@ -36,7 +47,7 @@ export default function TitlePageEditor({ titlePage, onChange }: Props) {
       <div className="title-page-field title-page-field--title">
         <textarea
           className="title-page-input title-page-title-input"
-          value={titlePage.title}
+          value={tp.title}
           onChange={(e) => set("title", e.target.value)}
           placeholder="SCREENPLAY TITLE"
           rows={2}
@@ -50,10 +61,10 @@ export default function TitlePageEditor({ titlePage, onChange }: Props) {
       <div className="title-page-field">
         <textarea
           className="title-page-input"
-          value={titlePage.authors.join("\n")}
+          value={tp.authors.join("\n")}
           onChange={(e) => setAuthors(e.target.value)}
           placeholder="Author Name"
-          rows={titlePage.authors.length > 1 ? titlePage.authors.length + 1 : 2}
+          rows={tp.authors.length > 1 ? tp.authors.length + 1 : 2}
           aria-label="Authors"
           spellCheck
         />
@@ -63,7 +74,7 @@ export default function TitlePageEditor({ titlePage, onChange }: Props) {
         <input
           className="title-page-input title-page-draft-input"
           type="text"
-          value={titlePage.draft}
+          value={tp.draft}
           onChange={(e) => set("draft", e.target.value)}
           placeholder="Draft information (optional)"
           aria-label="Draft"
@@ -73,7 +84,7 @@ export default function TitlePageEditor({ titlePage, onChange }: Props) {
       <div className="title-page-contact-section">
         <textarea
           className="title-page-input title-page-contact-input"
-          value={titlePage.contact}
+          value={tp.contact}
           onChange={(e) => set("contact", e.target.value)}
           placeholder={"Contact information (optional)\nname@example.com"}
           rows={3}

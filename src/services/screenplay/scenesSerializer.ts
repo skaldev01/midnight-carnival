@@ -35,7 +35,10 @@ export function scenesToTiptapDoc(scenes: ScreenplayElement[]): JSONContent {
 function toParagraph(el: ScreenplayElement): JSONContent {
   const node: JSONContent = {
     type: "paragraph",
-    attrs: { elementType: el.type },
+    attrs: {
+      elementType: el.type,
+      ...(el.pageBreakBefore ? { pageBreakBefore: true } : {}),
+    },
   };
   if (el.content) {
     node.content = [{ type: "text", text: el.content }];
@@ -55,7 +58,9 @@ export function tiptapDocToScenes(doc: JSONContent): ScreenplayElement[] {
     const type = isValidType(node.attrs?.elementType)
       ? (node.attrs!.elementType as ScreenplayElementType)
       : "action";
-    out.push({ type, content: extractText(node) });
+    const el: ScreenplayElement = { type, content: extractText(node) };
+    if (node.attrs?.pageBreakBefore) el.pageBreakBefore = true;
+    out.push(el);
   }
   return out;
 }

@@ -2082,6 +2082,31 @@ button { font-family: inherit; }
   margin: 18px 0;
 }
 
+/* Page break: an element that starts a new page in the source PDF.
+   Renders a large gap with a dashed separator so the next section is
+   clearly on a "new page" rather than running into the previous one. */
+.script-editor .ProseMirror p[data-page-break="true"] {
+  margin-top: 64px;
+  padding-top: 36px;
+  border-top: 1px dashed var(--rule, rgba(0, 0, 0, 0.18));
+  position: relative;
+}
+
+.script-editor .ProseMirror p[data-page-break="true"]::before {
+  content: "Page break";
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 10px;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted, #888);
+  background: var(--paper, #f5f1e8);
+}
+
 /* Empty-paragraph caret hint */
 .script-editor .ProseMirror p.is-empty:first-child::before,
 .script-editor .ProseMirror p:empty::before {
