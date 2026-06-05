@@ -9,6 +9,12 @@ import type {
 
 const SCENE_PREFIX = /^(INT\.?|EXT\.?|EST\.?|I\/E\.?|INT\.?\/EXT\.?)[\s.]/i;
 const TRANSITION_SUFFIX = /\b(?:TO:|FADE\s+OUT\.?|FADE\s+IN:?|CUT\s+TO:|DISSOLVE\s+TO:)$/i;
+// "(MORE)" prints at the foot of a page when a speech continues overleaf; the
+// matching cue at the top of the next page is "CHARACTER (CONT'D)". Both are
+// pagination furniture — they mark where the *source* PDF split one speech,
+// not an authored break — so we strip them and let the dialogue re-flow.
+const MORE_LINE = /^\(\s*MORE\s*\)$/i;
+const CONTD_SUFFIX = /\s*\(\s*CONT(?:'|’|´)?D\.?\s*\)\s*$/i;
 
 // Page-furniture artefacts that print at the top/bottom of every screenplay
 // page and must never become screenplay elements:
@@ -347,6 +353,13 @@ function heuristicParse(
   let afterPageBreak = false;
 
   const emit = (type: ScreenplayElementType, lineText: string) => {
+    // Strip the "(CONT'D)" tag from a continued character cue — it only existed
+    // to mark a speech the source PDF split across a page. On re-flow the speech
+    // is continuous, so the bare character name is correct.
+    if (type === "character" && CONTD_SUFFIX.test(lineText)) {
+      lineText = lineText.replace(CONTD_SUFFIX, "").trim();
+    }
+
     const prev = out[out.length - 1];
     const canMerge =
       prev && !breakRun && prev.type === type && MERGEABLE.has(type);
@@ -376,6 +389,18 @@ function heuristicParse(
     // current paragraph and no break is recorded, so a sentence that merely
     // wrapped across the page boundary never strands a fragment on a new page.
     if (raw.includes(PAGE_BREAK_MARKER)) {
+      // A "(MORE)" at the foot of the page means the *same* speech continues on
+      // the next page — this is a pagination artifact, not an authored break.
+      // The original PDF split one dialogue across the boundary; on re-export
+      // the speech re-flows and would otherwise force a near-empty page (the
+      // page ends right after "(MORE)"). Drop both the break AND the "(MORE)"
+      // furniture line so the dialogue flows as one continuous block.
+      const last = out[out.length - 1];
+      if (last && MORE_LINE.test(last.content.trim())) {
+        out.pop();
+        afterPageBreak = true;
+        continue;
+      }
       if (breakRun) pendingPageBreak = true;
       afterPageBreak = true;
       continue;

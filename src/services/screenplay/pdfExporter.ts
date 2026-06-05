@@ -200,8 +200,15 @@ export function exportScreenplayToPdf(
     const block = elementToBlock(element);
     if (!block) continue;
 
-    // Honor source-PDF page breaks: start this element on a fresh page.
-    if (element.pageBreakBefore && !firstOnPage) {
+    // Honor source-PDF page breaks: start this element on a fresh page — but
+    // ONLY if the current page is already mostly full. A captured break that
+    // would fire on a half-empty page is a pagination artifact (e.g. a "(MORE)"
+    // dialogue split in the source), not an authored break; honoring it leaves
+    // an ugly half-blank page. In that case we ignore it and let content flow.
+    const pageUsed = y - MARGIN_TOP;
+    const pageCapacity = usableBottom - MARGIN_TOP;
+    const pageMostlyFull = pageUsed >= pageCapacity * 0.75;
+    if (element.pageBreakBefore && !firstOnPage && pageMostlyFull) {
       newPage();
     }
 
