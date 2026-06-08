@@ -60,12 +60,17 @@ export async function extractPdfText(
     throw new PdfExtractError("This PDF has no pages.");
   }
 
-  const pages: string[] = [];
+  // First pass: pull every page's text items. We hold them so the line-height
+  // baseline can be computed across the WHOLE document, not per page. A single
+  // page may be all short one-line elements (e.g. a rapid dialogue exchange)
+  // and so carry no within-paragraph gap to measure; a document-wide baseline
+  // borrows that measurement from the content-rich pages.
+  const pageItems: TextItem[][] = [];
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     try {
       const page = await pdf.getPage(pageNum);
       const content = await page.getTextContent();
-      pages.push(reconstructPageText(content.items as TextItem[]));
+      pageItems.push(content.items as TextItem[]);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new PdfExtractError(
@@ -74,6 +79,12 @@ export async function extractPdfText(
     }
     onProgress?.(pageNum / pdf.numPages);
   }
+
+  // Compute the single-line height once, from gaps pooled across all pages.
+  const lineGap = computeLineGap(pageItems.flatMap(pageLineGaps));
+
+  // Second pass: format each page using the shared baseline.
+  const pages = pageItems.map((items) => reconstructPageText(items, lineGap));
 
   // Join with an explicit page-break marker on its own line so the title-page
   // splitter can stop at the first page boundary rather than swallowing later
@@ -94,30 +105,84 @@ export async function extractPdfText(
 const POINTS_PER_CHAR = 7.2; // Courier 12pt at 72dpi
 const PAGE_LEFT_MARGIN_PT = 72; // ~1 inch minimum left margin in most PDFs
 
-/**
- * Group items by Y coordinate (visual line), sort by X within a line.
- * Each output line is prefixed with its column offset (in Courier characters
- * from the page left edge) so the heuristic parser can classify elements by
- * their horizontal position rather than by space count, which is unreliable
- * across different PDF producers.
- *
- * Output format per line:  "<col>|<text>"
- * e.g. "0|INT. BEDROOM - NIGHT" or "25|JOHN" or "15|Where are you going?"
- */
-function reconstructPageText(items: TextItem[]): string {
+// Group a page's items into visual lines (Y rounded to 2pt) and return the
+// line keys top-to-bottom (PDF Y grows upward, so descending).
+function groupIntoLines(
+  items: TextItem[]
+): { yKeys: number[]; lineBuckets: Map<number, TextItem[]> } {
   const lineBuckets = new Map<number, TextItem[]>();
-
   for (const item of items) {
     if (!item.str) continue;
-    // Round Y to nearest 2pt to merge items on the same visual line.
     const y = Math.round(item.transform[5] / 2) * 2;
     const list = lineBuckets.get(y);
     if (list) list.push(item);
     else lineBuckets.set(y, [item]);
   }
-
-  // PDF Y grows upward → sort descending so top-of-page is first.
   const yKeys = [...lineBuckets.keys()].sort((a, b) => b - a);
+  return { yKeys, lineBuckets };
+}
+
+// Positive vertical gaps between consecutive visual lines on one page.
+function pageLineGaps(items: TextItem[]): number[] {
+  const { yKeys } = groupIntoLines(items);
+  const gaps: number[] = [];
+  for (let i = 1; i < yKeys.length; i++) {
+    const g = yKeys[i - 1] - yKeys[i]; // descending Y → positive gap
+    if (g > 0) gaps.push(g);
+  }
+  return gaps;
+}
+
+// Determine the typical single-line vertical gap so we can detect paragraph
+// breaks. PDFs don't emit blank lines — a paragraph break is just a larger
+// vertical gap between two text lines. A gap in the paragraph-break RANGE
+// (≥1.6× and ≤3× this height, see callers) is treated as a blank line.
+//
+// The baseline is the SMALLEST recurring gap, not the median. Within a
+// paragraph, lines sit one line-height apart; paragraph breaks are integer
+// multiples (2×, 3×). The median fails on pages full of short (1–3 line)
+// paragraphs: there the larger between-paragraph gaps outnumber the single-line
+// gaps and drag the median up onto the paragraph gap itself, so every real
+// break falls below the threshold and the whole page merges into one block.
+// The smallest gap that recurs often enough to be a real cluster (not a one-off
+// tight pair) is the true single-line spacing.
+//
+// We pass the gaps pooled across ALL pages (see extractPdfText) so a page made
+// up entirely of one-line elements — which has no within-paragraph gap of its
+// own — still gets the document's real line height rather than mistaking its
+// element spacing for the baseline.
+function computeLineGap(gaps: number[]): number {
+  let lineGap = 12; // sensible Courier-12 default
+  if (gaps.length > 0) {
+    const counts = new Map<number, number>();
+    for (const g of gaps) counts.set(g, (counts.get(g) ?? 0) + 1);
+    const maxCount = Math.max(...counts.values());
+    // A real line-height cluster recurs; require ≥25% of the most common gap's
+    // frequency (and at least twice) so a stray tight pair can't win.
+    const minCount = Math.max(2, maxCount * 0.25);
+    const candidates = [...counts.keys()].filter((g) => counts.get(g)! >= minCount);
+    if (candidates.length > 0) {
+      lineGap = Math.min(...candidates);
+    } else {
+      const sorted = [...gaps].sort((a, b) => a - b);
+      lineGap = sorted[Math.floor(sorted.length / 2)] || lineGap;
+    }
+  }
+  return lineGap;
+}
+
+/**
+ * Reconstruct one page's text. Each output line is prefixed with its column
+ * offset (in Courier characters from the page left edge) so the heuristic
+ * parser can classify elements by horizontal position rather than by space
+ * count, which is unreliable across different PDF producers. `lineGap` is the
+ * document-wide single-line height used to detect paragraph breaks.
+ *
+ * Output format per line:  "<col>|<text>"
+ * e.g. "0|INT. BEDROOM - NIGHT" or "25|JOHN" or "15|Where are you going?"
+ */
+function reconstructPageText(items: TextItem[], lineGap: number): string {
+  const { yKeys, lineBuckets } = groupIntoLines(items);
 
   // Find the minimum X across substantive lines to use as the left baseline.
   // We exclude very short items (page numbers, single-letter artefacts) which
@@ -133,27 +198,9 @@ function reconstructPageText(items: TextItem[]): string {
   }
   if (!isFinite(minX)) minX = PAGE_LEFT_MARGIN_PT;
 
-  // Determine the typical single-line vertical gap so we can detect paragraph
-  // breaks. PDFs don't emit blank lines — a paragraph break is just a larger
-  // vertical gap between two text lines. We take the median consecutive gap as
-  // the baseline line height, then treat a gap in the paragraph-break RANGE as
-  // a blank line.
-  //
-  // We use a range (≥1.6× and ≤3× line height), not just a lower bound: a
-  // single blank line is ~2× line height, but the large gap between a page
-  // header / footer (or page number) and the body is many line-heights. Those
-  // huge gaps are NOT paragraph breaks, so capping the range avoids emitting a
-  // spurious blank line that would split a paragraph wrapping across a page.
-  const gaps: number[] = [];
-  for (let i = 1; i < yKeys.length; i++) {
-    const g = yKeys[i - 1] - yKeys[i]; // descending Y → positive gap
-    if (g > 0) gaps.push(g);
-  }
-  let lineGap = 12; // sensible Courier-12 default
-  if (gaps.length > 0) {
-    const sorted = [...gaps].sort((a, b) => a - b);
-    lineGap = sorted[Math.floor(sorted.length / 2)] || lineGap;
-  }
+  // A single blank line is ~2× line height; a header/footer (or page-number)
+  // separation is many line-heights. Capping the range at 3× avoids emitting a
+  // spurious blank that would split a paragraph wrapping across a page.
   const paragraphGapMin = lineGap * 1.6;
   const paragraphGapMax = lineGap * 3;
 

@@ -1373,7 +1373,10 @@ button { font-family: inherit; }
     0 20px 50px -16px rgba(0,0,0,0.45),
     0 6px 16px -6px rgba(0,0,0,0.3);
   font-family: var(--script);
-  font-size: 14px;
+  /* Industry-standard screenplay body: 12pt Courier. The `pt` unit renders at
+     true physical 12pt (= 16px at 96dpi) so the on-screen surface matches the
+     12pt Courier of the exported PDF. */
+  font-size: 12pt;
   line-height: 1.55;
   position: relative;
   opacity: 0;

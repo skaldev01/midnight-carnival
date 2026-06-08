@@ -123,8 +123,9 @@ function writeTitlePage(doc: jsPDF, tp: TitlePage): void {
   let y = PAGE_HEIGHT / 3;
 
   if (tp.title) {
+    // Bold (not enlarged) so the whole document stays uniform 12pt Courier.
     doc.setFont("courier", "bold");
-    doc.setFontSize(14);
+    doc.setFontSize(12);
     const titleLines: string[] = doc.splitTextToSize(
       tp.title.toUpperCase(),
       PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
