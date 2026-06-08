@@ -331,6 +331,11 @@ function heuristicParse(
   const adaptiveDialogueMax = charColMedian - 1;
 
   let inDialogue = false;
+  // True while inside a parenthetical that opened with "(" on one line but has
+  // not yet closed with ")" — a wrapped aside like "(impatient; she doesn't" /
+  // "have time for this)". Continuation lines are folded into the parenthetical
+  // so it never bleeds into the surrounding dialogue.
+  let inParenthetical = false;
 
   // A PDF emits one element per *visual* line, so a single action paragraph or
   // a multi-line speech arrives as several lines. We MERGE consecutive lines of
@@ -415,6 +420,7 @@ function heuristicParse(
       // insert a spurious blank that strands a wrapped sentence on a new page.
       if (afterPageBreak) continue;
       inDialogue = false;
+      inParenthetical = false; // a blank line bounds a never-closed parenthetical
       breakRun = true;
       continue;
     }
@@ -430,6 +436,20 @@ function heuristicParse(
 
     // First real content line after a page break — stop suppressing blanks.
     afterPageBreak = false;
+
+    // Continuation of a wrapped parenthetical — fold this line into the open
+    // parenthetical until the closing ")". This must run before any other
+    // classification so the tail of the aside ("have time for this)") is never
+    // mistaken for dialogue.
+    if (inParenthetical) {
+      const open = out[out.length - 1];
+      if (open && open.type === "parenthetical") {
+        open.content = `${open.content} ${text}`.replace(/\s+/g, " ").trim();
+        if (text.endsWith(")")) inParenthetical = false;
+        continue;
+      }
+      inParenthetical = false; // lost the thread — classify this line normally
+    }
 
     // Scene headings are unambiguous regardless of column.
     if (SCENE_PREFIX.test(text)) {
@@ -449,12 +469,16 @@ function heuristicParse(
       continue;
     }
 
-    // Parentheticals inside dialogue block — always their own element.
-    if (text.startsWith("(") && text.endsWith(")")) {
+    // Parentheticals inside a dialogue block — always their own element. A
+    // parenthetical may wrap across visual lines, so an opening "(" without a
+    // closing ")" on the same line starts a continuation run (see above) that
+    // folds the remaining lines in until the ")".
+    if (text.startsWith("(")) {
       breakRun = true;
       emit("parenthetical", text);
       breakRun = true;
       // parenthetical keeps inDialogue true — next line is still dialogue.
+      if (!text.endsWith(")")) inParenthetical = true;
       continue;
     }
 
@@ -570,18 +594,43 @@ export function parseScreenplay(text: string): Screenplay {
   // the title so the running page header can be filtered out.
   const heuristicElements = heuristicParse(bodyText, titlePage?.title ?? null);
 
-  // ── 4. Pick the better parse ─────────────────────────────────────────────
-  const fountainScore = fountainElements.filter(
-    (e) => e.type === "scene" || e.type === "character"
-  ).length;
-  const heuristicScore = heuristicElements.filter(
-    (e) => e.type === "scene" || e.type === "character"
-  ).length;
+  // ── 4. Pick the parser ───────────────────────────────────────────────────
+  // If the body is COLUMNAR (a real PDF whose lines carry "<col>|" positional
+  // prefixes), the column-aware heuristic is authoritative. It uses horizontal
+  // position as the primary signal, strips page furniture (page numbers, footer
+  // codes, running headers), and re-flows wrapped lines with spaces so they
+  // export cleanly. fountain-js ignores all of that: on real studio PDFs it
+  // leaks furniture (e.g. a page number "2." stuck onto "Beat."), misclassifies
+  // cinematic directives, and embeds hard line-breaks that don't re-flow. It
+  // also tends to score HIGHER on raw scene+character count, so a score-based
+  // tiebreak picks the worse parse — hence we don't use one for columnar input.
+  //
+  // fountain-js is only the right tool for NON-columnar plain text: pasted
+  // scripts and clean .fountain exports with no positional data. There we keep
+  // the original "more scene+character elements wins" heuristic.
+  const bodyLines = bodyText.split("\n");
+  const columnarLineCount = bodyLines.filter((l) => {
+    const p = l.indexOf("|");
+    return p > 0 && p <= 4 && !isNaN(parseInt(l.slice(0, p), 10));
+  }).length;
+  const nonEmptyLineCount = bodyLines.filter(Boolean).length;
+  const isColumnarBody = columnarLineCount > nonEmptyLineCount * 0.6;
 
-  const scenes =
-    fountainScore >= heuristicScore && fountainElements.length > 0
-      ? fountainElements
-      : heuristicElements;
+  let scenes: ScreenplayElement[];
+  if (isColumnarBody && heuristicElements.length > 0) {
+    scenes = heuristicElements;
+  } else {
+    const fountainScore = fountainElements.filter(
+      (e) => e.type === "scene" || e.type === "character"
+    ).length;
+    const heuristicScore = heuristicElements.filter(
+      (e) => e.type === "scene" || e.type === "character"
+    ).length;
+    scenes =
+      fountainScore >= heuristicScore && fountainElements.length > 0
+        ? fountainElements
+        : heuristicElements;
+  }
 
   return { id, titlePage, scenes };
 }
